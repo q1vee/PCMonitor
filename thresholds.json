@@ -1,0 +1,9 @@
+{
+  "cpu_percent": 90,
+  "ram_percent": 90,
+  "temp_warning": 85,
+  "temp_critical": 95,
+  "disk_free_percent": 10,
+  "drive_temp": 55,
+  "reallocated_sectors": 0
+}
