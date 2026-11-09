@@ -122,6 +122,7 @@ def collect_disks() -> list[dict]:
             "mount": part.mountpoint,
             "fstype": part.fstype,
             "total_gb": _gb(u.total),
+            "used_gb": _gb(u.used),
             "free_gb": _gb(u.free),
             "percent": u.percent,
         })
@@ -131,23 +132,57 @@ def collect_disks() -> list[dict]:
 # --------------------------------------------------------------------------- #
 # Температура
 # --------------------------------------------------------------------------- #
+def _kind(text: str) -> str:
+    """Определить тип датчика по имени/идентификатору: cpu, gpu или other."""
+    t = text.lower()
+    if any(k in t for k in ("gpu", "nvidia", "radeon", "amdgpu", "nouveau")):
+        return "gpu"
+    if any(k in t for k in ("cpu", "core", "package", "tctl", "tdie", "k10temp", "coretemp", "zenpower")):
+        return "cpu"
+    return "other"
+
+
+def _gpu_temps_nvidia() -> list[dict]:
+    """Температура видеокарт NVIDIA через nvidia-smi (работает без прав администратора)."""
+    exe = shutil.which("nvidia-smi")
+    if not exe:
+        return []
+    try:
+        res = subprocess.run([exe, "--query-gpu=name,temperature.gpu", "--format=csv,noheader,nounits"],
+                             capture_output=True, text=True, timeout=10,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        log.debug("nvidia-smi: %s", exc)
+        return []
+    out = []
+    for line in res.stdout.splitlines():
+        name, _, temp = line.rpartition(",")
+        try:
+            out.append({"name": name.strip() or "NVIDIA GPU", "celsius": float(temp), "kind": "gpu"})
+        except ValueError:
+            continue
+    return out
+
+
 def collect_temperatures() -> dict:
     """Температуры из доступных источников.
 
     Порядок: psutil (Linux) → LibreHardwareMonitor/OpenHardwareMonitor (WMI)
-    → ACPI thermal zone (WMI, требует прав администратора).
+    → ACPI thermal zone (WMI, требует прав администратора); видеокарты NVIDIA —
+    дополнительно через nvidia-smi. Каждый датчик помечается типом cpu/gpu/other.
     """
     sensors: list[dict] = []
-    source = None
+    sources: list[str] = []
 
     # 1. psutil — работает в Linux/FreeBSD
     if hasattr(psutil, "sensors_temperatures"):
         try:
             for chip, entries in (psutil.sensors_temperatures() or {}).items():
                 for e in entries:
-                    sensors.append({"name": f"{chip} {e.label or ''}".strip(), "celsius": round(e.current, 1)})
+                    name = f"{chip} {e.label or ''}".strip()
+                    sensors.append({"name": name, "celsius": round(e.current, 1), "kind": _kind(name)})
             if sensors:
-                source = "psutil"
+                sources.append("psutil")
         except Exception as exc:  # noqa: BLE001
             log.debug("psutil temps: %s", exc)
 
@@ -158,11 +193,14 @@ def collect_temperatures() -> dict:
                 f"Get-CimInstance -Namespace {ns} -ClassName Sensor -Filter \"SensorType='Temperature'\" "
                 f"| Select-Object Name, Value, Identifier")
             if data:
-                sensors = [{"name": d.get("Name"), "celsius": round(float(d.get("Value") or 0), 1)} for d in data]
-                source = ns.split("/")[1]
+                for d in data:
+                    ident = f"{d.get('Identifier', '')} {d.get('Name', '')}"
+                    sensors.append({"name": d.get("Name"), "celsius": round(float(d.get("Value") or 0), 1),
+                                    "kind": _kind(ident)})
+                sources.append(ns.split("/")[1])
                 break
 
-    # 3. ACPI thermal zone
+    # 3. ACPI thermal zone — датчик системной платы (обычно не равен температуре ядер CPU)
     if not sensors and IS_WINDOWS:
         data = _run_powershell(
             "Get-CimInstance -Namespace root/wmi -ClassName MSAcpi_ThermalZoneTemperature "
@@ -171,15 +209,28 @@ def collect_temperatures() -> dict:
             for d in data:
                 raw = d.get("CurrentTemperature")
                 if raw:
-                    sensors.append({"name": d.get("InstanceName", "ACPI"),
-                                    "celsius": round(raw / 10 - 273.15, 1)})
-            source = "ACPI WMI"
+                    sensors.append({"name": "Системная плата (ACPI)",
+                                    "celsius": round(raw / 10 - 273.15, 1), "kind": "other"})
+            sources.append("ACPI WMI")
+
+    # 4. Видеокарты NVIDIA, если GPU ещё не найден другими источниками
+    if not any(s["kind"] == "gpu" for s in sensors):
+        gpu = _gpu_temps_nvidia()
+        if gpu:
+            sensors += gpu
+            sources.append("nvidia-smi")
+
+    def mx(kind):
+        vals = [s["celsius"] for s in sensors if s["kind"] == kind]
+        return max(vals) if vals else None
 
     if not sensors:
-        return {"available": False, "sensors": [], "max": None,
+        return {"available": False, "sensors": [], "max": None, "cpu": None, "gpu": None,
                 "note": "Датчики недоступны: запустите от имени администратора или LibreHardwareMonitor"}
-    return {"available": True, "source": source, "sensors": sensors,
-            "max": max(s["celsius"] for s in sensors)}
+    return {"available": True, "source": ", ".join(sources), "sensors": sensors,
+            "max": max(s["celsius"] for s in sensors), "cpu": mx("cpu"), "gpu": mx("gpu"),
+            "note": None if mx("cpu") is not None else
+            "Температура CPU недоступна: запустите LibreHardwareMonitor (и программу от имени администратора)"}
 
 
 # --------------------------------------------------------------------------- #

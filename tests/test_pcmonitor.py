@@ -8,6 +8,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from datetime import datetime  # noqa: E402
+
+from pcmonitor.history import (HistoryStore, format_period_stats, parse_datetime, period_range,  # noqa: E402
+                               period_stats, save_period_report)
 from pcmonitor.collectors import collect_cpu, collect_disks, collect_memory, collect_uptime  # noqa: E402
 from pcmonitor.report import build_report, format_report  # noqa: E402
 from pcmonitor.storage import MetricsLogger, read_log  # noqa: E402
@@ -85,6 +89,64 @@ class LogAndReportTests(unittest.TestCase):
     def test_missing_log_raises(self):
         with self.assertRaises(FileNotFoundError):
             read_log("нет_такого_файла.csv")
+
+
+class HistoryTests(unittest.TestCase):
+    def _store(self, d):
+        store = HistoryStore(Path(d) / "h.jsonl")
+        data = [  # время, cpu, ram, t_cpu, свободно на C:, предупреждение?
+            ("2026-11-01T10:00:00", 10, 40, 50, 100.0, False),
+            ("2026-11-09T10:00:00", 20, 50, 60, 90.0, False),
+            ("2026-11-09T10:30:00", 80, 70, 90, 85.5, True),
+            ("2026-11-09T11:00:00", 30, 60, 55, 80.0, False),
+        ]
+        th = Thresholds()
+        for ts, cpu, ram, t, free, _ in data:
+            s = make_snapshot(ts=ts, cpu=cpu, ram=ram, temp=t)
+            s["temperature"].update(cpu=t, gpu=t - 10)
+            s["disks"][0]["free_gb"] = free
+            store.append(s, check(s, th))
+        return store
+
+    def test_period_filter_and_stats(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = self._store(d)
+            start, end = datetime(2026, 11, 9, 9), datetime(2026, 11, 9, 12)
+            recs = store.load(start, end)
+            self.assertEqual(len(recs), 3)
+            s = period_stats(recs, start, end, "тест")
+            self.assertEqual(s["measurements"], 3)
+            self.assertEqual(s["cpu"], {"avg": 43.3, "max": 80, "max_at": "2026-11-09T10:30:00"})
+            self.assertEqual(s["ram"]["max"], 70)
+            self.assertEqual(s["temp_cpu"], {"min": 55, "max": 90})
+            self.assertEqual(s["temp_gpu"], {"min": 45, "max": 80})
+            self.assertEqual(s["disks"]["C:\\"]["change_gb"], -10.0)
+            self.assertEqual(s["warnings_total"], 1)
+            self.assertIn("СТАТИСТИКА ЗА ПЕРИОД", format_period_stats(s))
+
+    def test_empty_period(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = self._store(d)
+            start, end = datetime(2025, 1, 1), datetime(2025, 1, 2)
+            s = period_stats(store.load(start, end), start, end)
+            self.assertEqual(s["measurements"], 0)
+            self.assertIn("нет данных", format_period_stats(s))
+
+    def test_period_range_and_parse(self):
+        now = datetime(2026, 11, 9, 12)
+        self.assertEqual(period_range("week", now)[0], datetime(2026, 11, 2, 12))
+        self.assertEqual(parse_datetime("09.11.2026 14:30"), datetime(2026, 11, 9, 14, 30))
+        with self.assertRaises(ValueError):
+            parse_datetime("вчера")
+
+    def test_save_reports_all_formats(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = self._store(d)
+            start, end = datetime(2026, 11, 1), datetime(2026, 11, 10)
+            s = period_stats(store.load(start, end), start, end)
+            for fmt in ("txt", "json", "csv"):
+                p = save_period_report(s, Path(d) / fmt, fmt)
+                self.assertTrue(p.exists() and p.stat().st_size > 0)
 
 
 class CollectorTests(unittest.TestCase):

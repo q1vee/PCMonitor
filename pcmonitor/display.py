@@ -42,12 +42,18 @@ def render(snap: dict, alerts: list) -> str:
         L.append(f"ОЗУ        {bar(mem['percent'])}   {mem['used_gb']} / {mem['total_gb']} ГБ, подкачка {mem['swap_percent']}%")
 
     t = snap["temperature"]
+
+    def temp(v):
+        if v is None:
+            return _c("н/д", DIM)
+        return _c(f"{v:.1f} °C", RED if v > 85 else YEL if v > 70 else GRN)
+
     if t["available"]:
-        L.append(f"Температура (источник: {t['source']})")
-        for s in t["sensors"][:12]:
-            c = s["celsius"]
-            col = RED if c > 85 else YEL if c > 70 else GRN
-            L.append(f"  {s['name'][:40]:<40} {_c(f'{c:5.1f} °C', col)}")
+        L.append(f"Температура CPU {temp(t.get('cpu'))}   GPU {temp(t.get('gpu'))}   {_c('(' + t['source'] + ')', DIM)}")
+        for s in t["sensors"][:10]:
+            L.append(f"  {s['name'][:40]:<40} {temp(s['celsius'])}")
+        if t.get("note"):
+            L.append("  " + _c(t["note"], DIM))
     else:
         L.append(f"Температура {_c(t['note'], DIM)}")
 
@@ -56,7 +62,8 @@ def render(snap: dict, alerts: list) -> str:
         if "error" in d:
             L.append(f"  {d.get('mount', '?'):<6} ошибка: {d['error']}")
         else:
-            L.append(f"  {d['mount']:<6} {bar(d['percent'], 20, 80, 90)}  свободно {d['free_gb']} из {d['total_gb']} ГБ ({d['fstype']})")
+            L.append(f"  {d['mount']:<6} {bar(d['percent'], 20, 80, 90)}  занято {d.get('used_gb', '?')} ГБ, "
+                     f"свободно {d['free_gb']} из {d['total_gb']} ГБ ({d['fstype']})")
 
     sm = snap["smart"]
     if sm["available"]:

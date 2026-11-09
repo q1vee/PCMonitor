@@ -12,6 +12,8 @@ from pathlib import Path
 
 from . import __version__, display
 from .collectors import collect_all, collect_smart
+from .history import HistoryStore
+from .menu import run_menu
 from .report import build_report, format_report, save_report
 from .storage import MetricsLogger, read_log
 from .thresholds import Thresholds, check
@@ -24,7 +26,8 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("-v", "--verbose", action="store_true", help="отладочные сообщения")
     p.add_argument("--no-color", action="store_true", help="без цветного вывода")
     p.add_argument("--thresholds", metavar="FILE", help="JSON-файл с пороговыми значениями")
-    sub = p.add_subparsers(dest="command", required=True)
+    sub = p.add_subparsers(dest="command")  # без команды запускается интерактивное меню
+    sub.add_parser("menu", help="интерактивное меню (по умолчанию)")
 
     s = sub.add_parser("snapshot", help="однократный снимок состояния")
     s.add_argument("--json", action="store_true", help="вывести снимок в формате JSON")
@@ -60,6 +63,7 @@ def cmd_monitor(args, th: Thresholds) -> int:
         return 1
     out = Path(args.output or f"logs/metrics_{datetime.now():%Y%m%d_%H%M%S}.csv")
     logger = MetricsLogger(out)
+    history = HistoryStore()
     print(f"Мониторинг запущен: интервал {args.interval} с, "
           f"{'до Ctrl+C' if not args.duration else f'длительность {args.duration} с'}. Лог: {out.resolve()}")
     started = time.monotonic()
@@ -74,6 +78,7 @@ def cmd_monitor(args, th: Thresholds) -> int:
             alerts = check(snap, th)
             try:
                 logger.write(snap, alerts)
+                history.append(snap, alerts)
             except OSError as exc:
                 print(f"Ошибка записи лога: {exc}", file=sys.stderr)
             samples += 1
@@ -120,6 +125,8 @@ def main(argv: list[str] | None = None) -> int:
         display.USE_COLOR = False
     try:
         th = Thresholds.load(args.thresholds)
+        if args.command in (None, "menu"):
+            return run_menu(th)
         handler = {"snapshot": cmd_snapshot, "monitor": cmd_monitor, "report": cmd_report}[args.command]
         return handler(args, th)
     except (FileNotFoundError, ValueError, json.JSONDecodeError, TypeError) as exc:
