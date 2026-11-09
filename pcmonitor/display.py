@@ -71,7 +71,8 @@ def bar(percent: float | None, width: int = 24, warn: float = 75, crit: float = 
 
 def render(snap: dict, alerts: list) -> str:
     L: list[str] = []
-    L.append(_c(f"{HLINE} Мониторинг ПК · {snap['host']} · {snap['os']} · {snap['timestamp']} {HLINE}", BOLD))
+    mode = "администратор" if snap.get("admin") else "обычный пользователь"
+    L.append(_c(f"{HLINE} Мониторинг ПК · {snap['host']} · {snap['os']} · {mode} · {snap['timestamp']} {HLINE}", BOLD))
 
     cpu = snap["cpu"]
     if "error" in cpu:

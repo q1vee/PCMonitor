@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import platform
 import shutil
 import subprocess
@@ -49,6 +50,17 @@ def _run_powershell(script: str, timeout: int = 20) -> Any:
 
 def _gb(value: float) -> float:
     return round(value / 1024 ** 3, 2)
+
+
+def is_admin() -> bool:
+    """Запущена ли программа с правами администратора (root в Linux)."""
+    try:
+        if IS_WINDOWS:
+            import ctypes
+            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        return os.geteuid() == 0
+    except (AttributeError, OSError):
+        return False
 
 
 # --------------------------------------------------------------------------- #
@@ -224,13 +236,23 @@ def collect_temperatures() -> dict:
         vals = [s["celsius"] for s in sensors if s["kind"] == kind]
         return max(vals) if vals else None
 
+    # Подсказка, если температура CPU не найдена. Windows не предоставляет API для температуры
+    # ядер процессора: её читают из регистров CPU через драйвер (это делает LibreHardwareMonitor).
+    cpu_note = None
+    if mx("cpu") is None:
+        if IS_WINDOWS:
+            cpu_note = ("Температура CPU: Windows не отдаёт её сама — запустите LibreHardwareMonitor, "
+                        "программа подхватит его датчики автоматически")
+            if not is_admin():
+                cpu_note += " (обе программы — от имени администратора)"
+        else:
+            cpu_note = "Температура CPU: датчики не найдены (установите lm-sensors)"
+
     if not sensors:
-        return {"available": False, "sensors": [], "max": None, "cpu": None, "gpu": None,
-                "note": "Датчики недоступны: запустите от имени администратора или LibreHardwareMonitor"}
+        return {"available": False, "sensors": [], "max": None, "cpu": None, "gpu": None, "note": cpu_note}
     return {"available": True, "source": ", ".join(sources), "sensors": sensors,
             "max": max(s["celsius"] for s in sensors), "cpu": mx("cpu"), "gpu": mx("gpu"),
-            "note": None if mx("cpu") is not None else
-            "Температура CPU недоступна: запустите LibreHardwareMonitor (и программу от имени администратора)"}
+            "note": cpu_note}
 
 
 # --------------------------------------------------------------------------- #
@@ -359,6 +381,7 @@ def collect_all(cpu_interval: float = 1.0, smart: dict | None = None) -> dict:
     return {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "host": platform.node(),
+        "admin": is_admin(),
         "os": f"{platform.system()} {platform.release()}",
         "cpu": collect_cpu(cpu_interval),
         "memory": collect_memory(),
