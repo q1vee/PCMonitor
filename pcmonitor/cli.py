@@ -64,6 +64,7 @@ def cmd_monitor(args, th: Thresholds) -> int:
     out = Path(args.output or f"logs/metrics_{datetime.now():%Y%m%d_%H%M%S}.csv")
     logger = MetricsLogger(out)
     history = HistoryStore()
+    session = datetime.now().isoformat(timespec="seconds")
     print(f"Мониторинг запущен: интервал {args.interval} с, "
           f"{'до Ctrl+C' if not args.duration else f'длительность {args.duration} с'}. Лог: {out.resolve()}")
     started = time.monotonic()
@@ -78,7 +79,7 @@ def cmd_monitor(args, th: Thresholds) -> int:
             alerts = check(snap, th)
             try:
                 logger.write(snap, alerts)
-                history.append(snap, alerts)
+                history.append(snap, alerts, session)
             except OSError as exc:
                 print(f"Ошибка записи лога: {exc}", file=sys.stderr)
             samples += 1

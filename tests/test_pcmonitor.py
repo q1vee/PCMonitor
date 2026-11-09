@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from datetime import datetime  # noqa: E402
 
-from pcmonitor.history import (HistoryStore, format_period_stats, parse_datetime, period_range,  # noqa: E402
+from pcmonitor.history import (HistoryStore, format_period_stats, last_range, parse_datetime, period_range,  # noqa: E402
                                period_stats, save_period_report)
 from pcmonitor.collectors import collect_cpu, collect_disks, collect_memory, collect_uptime  # noqa: E402
 from pcmonitor.report import build_report, format_report  # noqa: E402
@@ -123,6 +123,21 @@ class HistoryTests(unittest.TestCase):
             self.assertEqual(s["disks"]["C:\\"]["change_gb"], -10.0)
             self.assertEqual(s["warnings_total"], 1)
             self.assertIn("СТАТИСТИКА ЗА ПЕРИОД", format_period_stats(s))
+
+    def test_last_n_and_sessions(self):
+        with tempfile.TemporaryDirectory() as d:
+            store = self._store(d)  # 4 замера без сеанса
+            for i in range(3):
+                s = make_snapshot(ts=f"2026-11-09T12:00:0{i}")
+                store.append(s, [], session="2026-11-09T12:00:00")
+            self.assertEqual([r["ts"] for r in store.load_last(2)],
+                             ["2026-11-09T12:00:01", "2026-11-09T12:00:02"])
+            sessions = store.sessions()
+            self.assertEqual(len(sessions), 1)
+            self.assertEqual(sessions[0]["count"], 3)
+            self.assertEqual(len(store.load_session("2026-11-09T12:00:00")), 3)
+            self.assertEqual(last_range(hours=5, now=datetime(2026, 11, 9, 12))[0], datetime(2026, 11, 9, 7))
+            self.assertEqual(last_range(days=2, now=datetime(2026, 11, 9, 12))[0], datetime(2026, 11, 7, 12))
 
     def test_empty_period(self):
         with tempfile.TemporaryDirectory() as d:

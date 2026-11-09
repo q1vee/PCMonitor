@@ -17,13 +17,14 @@ from statistics import mean
 DEFAULT_HISTORY = Path(__file__).resolve().parents[1] / "data" / "history.jsonl"
 
 
-def compact(snapshot: dict, alerts: list) -> dict:
-    """Сжать снимок до записи истории (~300 байт)."""
+def compact(snapshot: dict, alerts: list, session: str | None = None) -> dict:
+    """Сжать снимок до записи истории (~300 байт). ``session`` — метка сеанса мониторинга."""
     temp = snapshot.get("temperature", {})
     drives = snapshot.get("smart", {}).get("drives", [])
     statuses = {d.get("health") for d in drives if d.get("health")}
     return {
         "ts": snapshot.get("timestamp"),
+        "session": session,
         "cpu": snapshot.get("cpu", {}).get("percent"),
         "ram": snapshot.get("memory", {}).get("percent"),
         "ram_used_gb": snapshot.get("memory", {}).get("used_gb"),
@@ -43,10 +44,29 @@ class HistoryStore:
     def __init__(self, path: str | Path = DEFAULT_HISTORY):
         self.path = Path(path)
 
-    def append(self, snapshot: dict, alerts: list) -> None:
+    def append(self, snapshot: dict, alerts: list, session: str | None = None) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(compact(snapshot, alerts), ensure_ascii=False) + "\n")
+            f.write(json.dumps(compact(snapshot, alerts, session), ensure_ascii=False) + "\n")
+
+    def load_last(self, n: int) -> list[dict]:
+        """Последние n измерений."""
+        return self.load()[-n:] if n > 0 else []
+
+    def load_session(self, session: str) -> list[dict]:
+        return [r for r in self.load() if r.get("session") == session]
+
+    def sessions(self, limit: int = 10) -> list[dict]:
+        """Последние сеансы мониторинга: метка, начало, конец, число замеров (новые первыми)."""
+        info: dict[str, dict] = {}
+        for r in self.load():
+            sid = r.get("session")
+            if not sid:
+                continue
+            s = info.setdefault(sid, {"session": sid, "start": r["_dt"], "end": r["_dt"], "count": 0})
+            s["end"] = r["_dt"]
+            s["count"] += 1
+        return sorted(info.values(), key=lambda s: s["start"], reverse=True)[:limit]
 
     def load(self, start: datetime | None = None, end: datetime | None = None) -> list[dict]:
         """Записи в интервале [start, end]. Повреждённые строки пропускаются."""
@@ -86,6 +106,14 @@ def period_range(key: str, now: datetime | None = None) -> tuple[datetime, datet
     title, delta = PERIODS[key]
     now = now or datetime.now()
     return now - delta, now, title
+
+
+def last_range(hours: float = 0, days: float = 0, now: datetime | None = None) -> tuple[datetime, datetime, str]:
+    """Интервал «последние N часов / N дней»."""
+    now = now or datetime.now()
+    if hours:
+        return now - timedelta(hours=hours), now, f"Последние {hours:g} ч"
+    return now - timedelta(days=days), now, f"Последние {days:g} дн."
 
 
 def parse_datetime(text: str) -> datetime:
