@@ -37,6 +37,11 @@ def flatten(snapshot: dict, alerts: list) -> dict:
     }
 
 
+def excel_row(row: dict) -> dict:
+    """Дробные числа — с запятой: так Excel с русскими настройками не превращает 21.6 в «21.июн»."""
+    return {k: (str(v).replace(".", ",") if isinstance(v, float) else v) for k, v in row.items()}
+
+
 class MetricsLogger:
     """Дописывает замеры в файл. Формат определяется расширением: .csv или .json/.jsonl."""
 
@@ -53,7 +58,7 @@ class MetricsLogger:
                 w = csv.DictWriter(f, fieldnames=CSV_FIELDS, delimiter=";")
                 if new_file:
                     w.writeheader()
-                w.writerow(flatten(snapshot, alerts))
+                w.writerow(excel_row(flatten(snapshot, alerts)))
         else:
             record = dict(snapshot, alerts=[a.__dict__ for a in alerts])
             with self.path.open("a", encoding="utf-8") as f:
@@ -64,7 +69,7 @@ def _num(v):
     if v in (None, "", "None"):
         return None
     try:
-        return float(v)
+        return float(str(v).replace(",", "."))   # в логе может быть и 21.6, и 21,6
     except (TypeError, ValueError):
         return None
 

@@ -76,6 +76,29 @@ class LogAndReportTests(unittest.TestCase):
     def test_jsonl(self):
         self._roundtrip(".jsonl")
 
+    def test_csv_uses_decimal_comma_for_excel(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "log.csv"
+            MetricsLogger(path).write(make_snapshot(cpu=21.6), [])
+            text = path.read_text(encoding="utf-8-sig")
+            self.assertIn(";21,6;", text)
+            self.assertEqual(read_log(path)[0]["cpu_percent"], 21.6)
+
+    def test_logs_list_and_table(self):
+        from pcmonitor import menu
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "monitoring_2026-11-10.csv"
+            th = Thresholds()
+            for i in range(3):
+                s = make_snapshot(ts=f"2026-11-10T10:00:0{i}", free_pct=5)
+                MetricsLogger(path).write(s, check(s, th))
+            (Path(d) / "other.txt").write_text("x", encoding="utf-8")
+            self.assertEqual(menu.list_logs(Path(d)), [path])
+            self.assertEqual(menu._log_rows_count(path), 3)
+            table = menu.format_log_table(read_log(path))
+            self.assertIn("2026-11-10 10:00:02", table)
+            self.assertEqual(len(table.splitlines()), 5)  # заголовок, черта, 3 строки
+
     def test_broken_json_line_skipped(self):
         with tempfile.TemporaryDirectory() as d:
             p = Path(d) / "log.jsonl"

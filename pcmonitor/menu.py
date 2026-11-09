@@ -11,7 +11,8 @@ from pathlib import Path
 from . import display
 from .collectors import collect_all, collect_smart
 from .history import PERIODS, HistoryStore, format_period_stats, period_range, period_stats, save_period_report
-from .storage import MetricsLogger
+from .report import build_report
+from .storage import MetricsLogger, read_log
 from .thresholds import Thresholds, check
 
 from .paths import APP_DIR as ROOT
@@ -281,6 +282,127 @@ def monitoring_reports() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# 5. Логи мониторинга
+# --------------------------------------------------------------------------- #
+LOG_ROWS_ON_SCREEN = 30
+
+
+def _log_last_time(path: Path) -> datetime:
+    """Время последнего замера в логе (если не прочитать — время изменения файла)."""
+    try:
+        with path.open(encoding="utf-8-sig", errors="replace") as f:
+            last = ""
+            for line in f:
+                if line.strip():
+                    last = line
+        if path.suffix.lower() == ".csv":
+            stamp = last.split(";", 1)[0]
+        else:
+            import json
+            stamp = json.loads(last).get("timestamp", "")
+        return datetime.fromisoformat(stamp)
+    except (OSError, ValueError, AttributeError):
+        return datetime.fromtimestamp(path.stat().st_mtime)
+
+
+def list_logs(folder: Path = LOGS_DIR) -> list[Path]:
+    """Файлы логов (CSV и JSONL), новые первыми — по времени последнего замера."""
+    if not folder.exists():
+        return []
+    files = [p for p in folder.iterdir() if p.suffix.lower() in (".csv", ".jsonl") and p.is_file()]
+    return sorted(files, key=_log_last_time, reverse=True)
+
+
+def _cell(v, width: int, digits: int = 1) -> str:
+    if v is None or v == "":
+        text = "—"
+    elif isinstance(v, float):
+        text = f"{v:.{digits}f}"
+    else:
+        text = str(v)
+    return text[:width].rjust(width)
+
+
+def format_log_table(rows: list[dict]) -> str:
+    """Таблица замеров лога для вывода в консоль."""
+    head = (f"{'Время':<19} {'CPU %':>6} {'RAM %':>6} {'ОЗУ ГБ':>7} {'Темп °C':>7} "
+            f"{'Мин. своб. %':>12} {'Диск':>5} {'SMART':>6} {'Предупр.':>8}")
+    lines = [head, "-" * len(head)]
+    for r in rows:
+        alerts = [a for a in (r.get("alerts") or "").split("|") if a.strip()]
+        lines.append(
+            f"{str(r.get('timestamp', '')).replace('T', ' ')[:19]:<19} {_cell(r['cpu_percent'], 6)} "
+            f"{_cell(r['ram_percent'], 6)} {_cell(r['ram_used_gb'], 7, 2)} {_cell(r['temp_max'], 7)} "
+            f"{_cell(r['disk_min_free_percent'], 12)} {_cell(r.get('disk_min_free_mount'), 5)} "
+            f"{_cell(r.get('smart_status'), 6)} {_cell(len(alerts), 8)}")
+    return "\n".join(lines)
+
+
+def _log_rows_count(path: Path) -> int:
+    try:
+        with path.open(encoding="utf-8-sig", errors="replace") as f:
+            n = sum(1 for line in f if line.strip())
+    except OSError:
+        return 0
+    return n - 1 if path.suffix.lower() == ".csv" else n
+
+
+def view_logs() -> None:
+    _clear()
+    logs = list_logs()
+    print(f"{LINE}\n  Логи мониторинга\n{LINE}")
+    print(f"  Папка: {LOGS_DIR}")
+    if not logs:
+        print("\n  Логов пока нет. Они появляются после «1. Текущий мониторинг».")
+        _pause()
+        return
+    shown = logs[:20]
+    for i, p in enumerate(shown, 1):
+        print(f"  {i:>2}. {p.name:<34} последний замер {_log_last_time(p):%d.%m.%Y %H:%M}   "
+              f"замеров: {_log_rows_count(p)}")
+    print(f"\n   0. Назад\n{LINE}")
+    raw = _ask("Номер лога (Enter — последний): ") or "1"
+    if raw == "0":
+        return
+    if not raw.isdigit() or not 1 <= int(raw) <= len(shown):
+        print("Неверный выбор.")
+        _pause()
+        return
+    path = shown[int(raw) - 1]
+    try:
+        rows = read_log(path)
+    except (OSError, ValueError) as exc:
+        print(f"Не удалось прочитать лог: {exc}")
+        _pause()
+        return
+    _clear()
+    print(f"Лог: {path.name}   всего замеров: {len(rows)}\n")
+    if not rows:
+        print("Лог пуст.")
+        _pause()
+        return
+    tail = rows[-LOG_ROWS_ON_SCREEN:]
+    if len(rows) > len(tail):
+        print(f"(показаны последние {len(tail)} замеров)")
+    print(format_log_table(tail))
+
+    rep = build_report(rows)
+    def s(key):
+        st = rep[key]
+        return f"ср {st['avg']} / макс {st['max']}" if st else "нет данных"
+    print(f"\nИтог: период {rep['period_start'].replace('T', ' ')} — {rep['period_end'].replace('T', ' ')}, "
+          f"замеров {rep['samples']}")
+    print(f"      CPU % {s('cpu_percent')} · RAM % {s('ram_percent')} · темп. °C {s('temp_max')} · "
+          f"замеров с предупреждениями: {rep['samples_with_alerts']}")
+    if os.name == "nt" and _ask("\nОткрыть лог в Excel? (д/н): ").lower() in ("д", "y", "да", "yes"):
+        try:
+            os.startfile(path)  # noqa: S606
+        except OSError as exc:
+            print(f"Не удалось открыть: {exc}")
+    _pause()
+
+
+# --------------------------------------------------------------------------- #
 # Главное меню
 # --------------------------------------------------------------------------- #
 def run_menu(th: Thresholds, store: HistoryStore | None = None) -> int:
@@ -288,11 +410,12 @@ def run_menu(th: Thresholds, store: HistoryStore | None = None) -> int:
     actions = {"1": lambda: live_monitoring(th, store),
                "2": lambda: period_monitoring(store),
                "3": lambda: create_report(store),
-               "4": monitoring_reports}
+               "4": monitoring_reports,
+               "5": view_logs}
     while True:
         _clear()
         print(f"{LINE}\n   МОНИТОРИНГ СОСТОЯНИЯ ПК\n{LINE}")
-        print("1. Текущий мониторинг\n2. Мониторинг за период\n3. Создать отчёт\n4. Отчёт мониторинга\n\n0. Выход\n")
+        print("1. Текущий мониторинг\n2. Мониторинг за период\n3. Создать отчёт\n4. Отчёт мониторинга\n5. Логи мониторинга\n\n0. Выход\n")
         print(LINE)
         try:
             choice = input("Выберите действие: ").strip()
@@ -303,7 +426,7 @@ def run_menu(th: Thresholds, store: HistoryStore | None = None) -> int:
             return 0
         action = actions.get(choice)
         if action is None:
-            print("Неверный выбор. Введите 1, 2, 3, 4 или 0.")
+            print("Неверный выбор. Введите число от 0 до 5.")
             time.sleep(1.2)
             continue
         try:

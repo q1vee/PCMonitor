@@ -251,7 +251,8 @@ def save_period_report(s: dict, folder: str | Path, fmt: str = "txt", name: str 
             w = csv.writer(f, delimiter=";")
             w.writerow(["Показатель", "Значение"])
             for k, v in rows:
-                w.writerow([k, "" if v is None else v])
+                # дробные — с запятой, чтобы Excel с русскими настройками не принял их за даты
+                w.writerow([k, "" if v is None else str(v).replace(".", ",") if isinstance(v, float) else v])
     else:
         path.write_text(format_period_stats(s) + "\n", encoding="utf-8")
     return path
