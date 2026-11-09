@@ -162,7 +162,7 @@ monitor.py                точка входа (без аргументов —
 start.bat                 запуск меню двойным щелчком (нужен Python)
 build_exe.bat             сборка dist/PCMonitor.exe для других ПК (PyInstaller)
 pcmonitor/
-  paths.py                папка данных: рядом с exe/проектом или %LOCALAPPDATA%PCMonitor
+  paths.py                папка данных: рядом с exe/проектом или %LOCALAPPDATA%\PCMonitor
   cli.py                  разбор аргументов (argparse), команды menu / snapshot / monitor / report
   menu.py                 интерактивное меню: текущий мониторинг, статистика за период, отчёт
   history.py              история замеров (data/history.jsonl), периоды, статистика, отчёты TXT/JSON/CSV
