@@ -229,11 +229,11 @@ def format_period_stats(s: dict) -> str:
     return "\n".join(L)
 
 
-def save_period_report(s: dict, folder: str | Path, fmt: str = "txt") -> Path:
+def save_period_report(s: dict, folder: str | Path, fmt: str = "txt", name: str | None = None) -> Path:
     """Сохранить отчёт за период в TXT, JSON или CSV."""
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
-    path = folder / f"report_{datetime.now():%Y%m%d_%H%M%S}.{fmt}"
+    path = folder / f"{name or f'report_{datetime.now():%Y%m%d_%H%M%S}'}.{fmt}"
     if fmt == "json":
         path.write_text(json.dumps(s, ensure_ascii=False, indent=2), encoding="utf-8")
     elif fmt == "csv":

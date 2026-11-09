@@ -10,13 +10,13 @@ from pathlib import Path
 
 from . import display
 from .collectors import collect_all, collect_smart
-from .history import (HistoryStore, format_period_stats, last_range, parse_datetime, period_range,
-                      period_stats, save_period_report)
+from .history import PERIODS, HistoryStore, format_period_stats, period_range, period_stats, save_period_report
 from .storage import MetricsLogger
 from .thresholds import Thresholds, check
 
 ROOT = Path(__file__).resolve().parents[1]
 REPORTS_DIR = ROOT / "reports"
+MONITORING_REPORTS_DIR = REPORTS_DIR / "monitoring"
 LOGS_DIR = ROOT / "logs"
 LINE = "=" * 40
 
@@ -127,107 +127,53 @@ def live_monitoring(th: Thresholds, store: HistoryStore) -> None:
     except KeyboardInterrupt:
         pass
     print(f"\n\nМониторинг остановлен. Записано замеров: {samples} (лог: {daily_log_path().relative_to(ROOT)}).")
-    print("Отчёт по этому сеансу: «3. Создать отчёт» → «Сеанс текущего мониторинга».")
-    time.sleep(2)
+    if samples:
+        try:
+            path, stats = save_session_report(store, session)
+        except OSError as exc:
+            print(f"Не удалось сохранить отчёт мониторинга: {exc}")
+        else:
+            print()
+            print(format_period_stats(stats))
+            print(f"\nОтчёт мониторинга сохранён: {path.relative_to(ROOT)}")
+            print("Все отчёты мониторинга — в пункте меню «4. Отчёт мониторинга».")
+    _pause()
+
+
+def save_session_report(store: HistoryStore, session: str) -> tuple[Path, dict]:
+    """Построить и сохранить отчёт по завершённому сеансу текущего мониторинга."""
+    recs = store.load_session(session)
+    start, end = (recs[0]["_dt"], recs[-1]["_dt"]) if recs else (datetime.now(),) * 2
+    stats = period_stats(recs, start, end, f"Сеанс мониторинга от {start:%d.%m.%Y %H:%M:%S}")
+    path = save_period_report(stats, MONITORING_REPORTS_DIR, "txt", name=f"monitoring_{start:%Y%m%d_%H%M%S}")
+    return path, stats
 
 
 # --------------------------------------------------------------------------- #
-# Выбор данных для статистики и отчёта
+# Выбор периода для статистики и отчёта
 # --------------------------------------------------------------------------- #
-DATA_CHOICES = [
-    "Последний час",
-    "Последние 24 часа",
-    "Последние 7 дней",
-    "Последние N часов",
-    "Последние N дней",
-    "Последние N измерений",
-    "Сеанс текущего мониторинга",
-    "Произвольный период",
-]
-
-
-def _span(recs: list[dict]) -> tuple[datetime, datetime]:
-    if recs:
-        return recs[0]["_dt"], recs[-1]["_dt"]
-    now = datetime.now()
-    return now, now
-
-
-def _choose_session(store: HistoryStore) -> tuple[list[dict], str] | None:
-    sessions = store.sessions()
-    if not sessions:
-        print("Сеансов текущего мониторинга пока нет.")
-        return None
-    print("\n  Последние сеансы текущего мониторинга:")
-    for i, s in enumerate(sessions, 1):
-        print(f"  {i}. {s['start']:%d.%m.%Y %H:%M:%S} — {s['end']:%H:%M:%S}   замеров: {s['count']}")
-    raw = _ask("Номер сеанса (Enter — последний): ") or "1"
-    if not raw.isdigit() or not 1 <= int(raw) <= len(sessions):
-        print("Неверный выбор.")
-        return None
-    s = sessions[int(raw) - 1]
-    return store.load_session(s["session"]), f"Сеанс мониторинга от {s['start']:%d.%m.%Y %H:%M:%S}"
+PERIOD_KEYS = ("hour", "day", "week")
 
 
 def choose_data(store: HistoryStore) -> tuple[list[dict], datetime, datetime, str] | None:
-    """Спросить, за какой период или по каким измерениям строить статистику."""
+    """Спросить период: последний час, 24 часа или 7 дней."""
     bounds = store.bounds()
-    print(f"\n{LINE}\n  Данные для статистики\n{LINE}")
+    print(f"\n{LINE}\n  Выберите период\n{LINE}")
     if bounds:
         print(f"  История: {bounds[0]:%d.%m.%Y %H:%M} — {bounds[1]:%d.%m.%Y %H:%M}")
     else:
         print("  История пока пуста — сначала запустите «Текущий мониторинг».")
-    for i, title in enumerate(DATA_CHOICES, 1):
-        print(f"  {i}. {title}")
+    for i, key in enumerate(PERIOD_KEYS, 1):
+        print(f"  {i}. {PERIODS[key][0]}")
     print(f"\n  0. Назад\n{LINE}")
-    choice = _ask("Выберите вариант: ")
-
+    choice = _ask("Выберите период: ")
     if choice == "0":
         return None
-    if choice in ("1", "2", "3"):
-        start, end, title = period_range(("hour", "day", "week")[int(choice) - 1])
-        return store.load(start, end), start, end, title
-    if choice == "4":
-        n = _ask_number("Сколько последних часов? ")
-        if n is None:
-            return None
-        start, end, title = last_range(hours=n)
-        return store.load(start, end), start, end, title
-    if choice == "5":
-        n = _ask_number("Сколько последних дней? ")
-        if n is None:
-            return None
-        start, end, title = last_range(days=n)
-        return store.load(start, end), start, end, title
-    if choice == "6":
-        n = _ask_number("Сколько последних измерений? ")
-        if n is None:
-            return None
-        recs = store.load_last(int(n))
-        return (recs, *_span(recs), f"Последние измерения ({int(n)} шт.)")
-    if choice == "7":
-        res = _choose_session(store)
-        if not res:
-            return None
-        recs, title = res
-        return (recs, *_span(recs), title)
-    if choice == "8":
-        print("Формат даты: ДД.ММ.ГГГГ ЧЧ:ММ (время можно не указывать)")
-        try:
-            start = parse_datetime(_ask("  Начало периода: "))
-            end_raw = _ask("  Конец периода (Enter — сейчас): ")
-            end = parse_datetime(end_raw) if end_raw else datetime.now()
-            if len(end_raw) == 10:     # указана только дата — до конца дня
-                end = end.replace(hour=23, minute=59, second=59)
-        except ValueError as exc:
-            print(f"Ошибка: {exc}")
-            return None
-        if start > end:
-            print("Ошибка: начало периода позже конца.")
-            return None
-        return store.load(start, end), start, end, "Произвольный период"
-    print("Неверный выбор.")
-    return None
+    if choice not in ("1", "2", "3"):
+        print("Неверный выбор.")
+        return None
+    start, end, title = period_range(PERIOD_KEYS[int(choice) - 1])
+    return store.load(start, end), start, end, title
 
 
 # --------------------------------------------------------------------------- #
@@ -274,17 +220,82 @@ def create_report(store: HistoryStore) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# 4. Отчёт мониторинга
+# --------------------------------------------------------------------------- #
+def list_monitoring_reports(folder: Path = MONITORING_REPORTS_DIR) -> list[Path]:
+    """Сохранённые отчёты сеансов мониторинга, новые первыми."""
+    return sorted(folder.glob("monitoring_*.txt"), reverse=True) if folder.exists() else []
+
+
+def _report_summary(path: Path) -> str:
+    """Дата сеанса и число измерений для строки списка."""
+    try:
+        when = datetime.strptime(path.stem, "monitoring_%Y%m%d_%H%M%S").strftime("%d.%m.%Y %H:%M:%S")
+    except ValueError:
+        when = path.stem
+    count = "?"
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if "Количество измерений" in line:
+                count = line.split(":")[-1].strip()
+                break
+    except OSError:
+        pass
+    return f"{when}   замеров: {count}"
+
+
+def monitoring_reports() -> None:
+    _clear()
+    reports = list_monitoring_reports()
+    print(f"{LINE}\n  Отчёты мониторинга\n{LINE}")
+    if not reports:
+        print("  Отчётов пока нет. Отчёт сохраняется автоматически\n"
+              "  после каждого сеанса «1. Текущий мониторинг».")
+        _pause()
+        return
+    shown = reports[:20]
+    for i, path in enumerate(shown, 1):
+        print(f"  {i:>2}. {_report_summary(path)}")
+    if len(reports) > len(shown):
+        print(f"  … и ещё {len(reports) - len(shown)} (папка {MONITORING_REPORTS_DIR.relative_to(ROOT)})")
+    print(f"\n   0. Назад\n{LINE}")
+    raw = _ask("Номер отчёта (Enter — последний): ") or "1"
+    if raw == "0":
+        return
+    if not raw.isdigit() or not 1 <= int(raw) <= len(shown):
+        print("Неверный выбор.")
+        _pause()
+        return
+    path = shown[int(raw) - 1]
+    _clear()
+    try:
+        print(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        print(f"Не удалось прочитать отчёт: {exc}")
+        _pause()
+        return
+    print(f"Файл: {path}")
+    if os.name == "nt" and _ask("Открыть файл отчёта? (д/н): ").lower() in ("д", "y", "да", "yes"):
+        try:
+            os.startfile(path)  # noqa: S606
+        except OSError as exc:
+            print(f"Не удалось открыть: {exc}")
+    _pause()
+
+
+# --------------------------------------------------------------------------- #
 # Главное меню
 # --------------------------------------------------------------------------- #
 def run_menu(th: Thresholds, store: HistoryStore | None = None) -> int:
     store = store or HistoryStore()
     actions = {"1": lambda: live_monitoring(th, store),
                "2": lambda: period_monitoring(store),
-               "3": lambda: create_report(store)}
+               "3": lambda: create_report(store),
+               "4": monitoring_reports}
     while True:
         _clear()
         print(f"{LINE}\n   МОНИТОРИНГ СОСТОЯНИЯ ПК\n{LINE}")
-        print("1. Текущий мониторинг\n2. Мониторинг за период\n3. Создать отчёт\n\n0. Выход\n")
+        print("1. Текущий мониторинг\n2. Мониторинг за период\n3. Создать отчёт\n4. Отчёт мониторинга\n\n0. Выход\n")
         print(LINE)
         try:
             choice = input("Выберите действие: ").strip()
@@ -295,7 +306,7 @@ def run_menu(th: Thresholds, store: HistoryStore | None = None) -> int:
             return 0
         action = actions.get(choice)
         if action is None:
-            print("Неверный выбор. Введите 1, 2, 3 или 0.")
+            print("Неверный выбор. Введите 1, 2, 3, 4 или 0.")
             time.sleep(1.2)
             continue
         try:

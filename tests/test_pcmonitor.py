@@ -139,6 +139,23 @@ class HistoryTests(unittest.TestCase):
             self.assertEqual(last_range(hours=5, now=datetime(2026, 11, 9, 12))[0], datetime(2026, 11, 9, 7))
             self.assertEqual(last_range(days=2, now=datetime(2026, 11, 9, 12))[0], datetime(2026, 11, 7, 12))
 
+    def test_session_report_saved_and_listed(self):
+        from pcmonitor import menu
+        with tempfile.TemporaryDirectory() as d:
+            store = HistoryStore(Path(d) / "h.jsonl")
+            for i in range(3):
+                store.append(make_snapshot(ts=f"2026-11-10T09:00:0{i}"), [], session="S1")
+            old = menu.MONITORING_REPORTS_DIR
+            menu.MONITORING_REPORTS_DIR = Path(d) / "monitoring"
+            try:
+                path, stats = menu.save_session_report(store, "S1")
+            finally:
+                menu.MONITORING_REPORTS_DIR = old
+            self.assertEqual(path.name, "monitoring_20261110_090000.txt")
+            self.assertEqual(stats["measurements"], 3)
+            self.assertEqual(menu.list_monitoring_reports(Path(d) / "monitoring"), [path])
+            self.assertIn("замеров: 3", menu._report_summary(path))
+
     def test_empty_period(self):
         with tempfile.TemporaryDirectory() as d:
             store = self._store(d)

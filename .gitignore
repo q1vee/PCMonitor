@@ -5,3 +5,4 @@ data/
 logs/monitoring_*.csv
 logs/metrics_*.csv
 reports/report_2*
+reports/monitoring/
