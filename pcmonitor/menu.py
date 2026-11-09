@@ -14,10 +14,9 @@ from .history import PERIODS, HistoryStore, format_period_stats, period_range, p
 from .storage import MetricsLogger
 from .thresholds import Thresholds, check
 
-ROOT = Path(__file__).resolve().parents[1]
-REPORTS_DIR = ROOT / "reports"
-MONITORING_REPORTS_DIR = REPORTS_DIR / "monitoring"
-LOGS_DIR = ROOT / "logs"
+from .paths import APP_DIR as ROOT
+from .paths import LOGS_DIR, MONITORING_REPORTS_DIR, REPORTS_DIR
+
 LINE = "=" * 40
 
 if os.name == "nt":
@@ -44,7 +43,7 @@ else:
 
 
 def _clear() -> None:
-    print("\033[2J\033[H", end="")
+    display.clear_screen()
 
 
 def _pause() -> None:
@@ -114,9 +113,7 @@ def live_monitoring(th: Thresholds, store: HistoryStore) -> None:
             screen = display.render(snap, alerts)
             footer = (f"\nОбновление каждые {interval:g} с · {log_note}\n"
                       f"Q, Esc или Enter — остановить и вернуться в меню")
-            # перерисовка без мерцания: курсор в начало, строки с очисткой хвоста
-            out = "\n".join(line + "\033[K" for line in (screen + footer).split("\n"))
-            print("\033[H" + out + "\033[J", end="", flush=True)
+            display.redraw(screen + footer)
 
             # ожидание до следующего обновления с проверкой клавиш
             while time.monotonic() - t0 < interval:

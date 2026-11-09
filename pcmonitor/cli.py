@@ -14,6 +14,7 @@ from . import __version__, display
 from .collectors import collect_all, collect_smart
 from .history import HistoryStore
 from .menu import run_menu
+from .paths import LOGS_DIR
 from .report import build_report, format_report, save_report
 from .storage import MetricsLogger, read_log
 from .thresholds import Thresholds, check
@@ -61,7 +62,7 @@ def cmd_monitor(args, th: Thresholds) -> int:
     if args.interval <= 0:
         print("Ошибка: интервал должен быть больше 0", file=sys.stderr)
         return 1
-    out = Path(args.output or f"logs/metrics_{datetime.now():%Y%m%d_%H%M%S}.csv")
+    out = Path(args.output) if args.output else LOGS_DIR / f"metrics_{datetime.now():%Y%m%d_%H%M%S}.csv"
     logger = MetricsLogger(out)
     history = HistoryStore()
     session = datetime.now().isoformat(timespec="seconds")
@@ -87,8 +88,8 @@ def cmd_monitor(args, th: Thresholds) -> int:
                 for a in alerts:
                     print(f"{snap['timestamp']} {a}")
             else:
-                print("\033[2J\033[H" + display.render(snap, alerts))
-                print(f"\nЗамеров: {samples} · лог: {out} · Ctrl+C — остановить")
+                display.redraw(display.render(snap, alerts)
+                               + f"\n\nЗамеров: {samples} · лог: {out} · Ctrl+C — остановить")
             if args.duration and time.monotonic() - started >= args.duration:
                 break
             time.sleep(max(0.0, args.interval - (time.monotonic() - t0)))

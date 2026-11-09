@@ -279,6 +279,31 @@ def _smart_via_smartctl() -> list[dict] | None:
     return result
 
 
+# Значения Get-PhysicalDisk приходят строками ("Healthy") или числами (коды MSFT_PhysicalDisk)
+# в зависимости от версии Windows/PowerShell — поддерживаем оба варианта.
+_HEALTH = {"Healthy": "OK", "Warning": "WARNING", "Unhealthy": "FAIL", "Unknown": "N/A",
+           0: "OK", 1: "WARNING", 2: "FAIL", 5: "N/A"}
+_MEDIA = {0: "Unspecified", 3: "HDD", 4: "SSD", 5: "SCM"}
+_BUS = {1: "SCSI", 3: "ATA", 7: "USB", 8: "RAID", 10: "SAS", 11: "SATA", 12: "SD", 13: "MMC", 17: "NVMe"}
+
+
+def _smart_via_wmi_legacy() -> list[dict] | None:
+    """Windows 7/8 без Get-PhysicalDisk: общий статус SMART из Win32_DiskDrive."""
+    data = _run_powershell(
+        "Get-WmiObject Win32_DiskDrive | Select-Object Index, Model, Status, InterfaceType, "
+        "@{n='SizeGB';e={[math]::Round($_.Size/1GB,1)}}")
+    if not data:
+        return None
+    return [{
+        "device": f"PhysicalDrive{d.get('Index')}",
+        "model": (d.get("Model") or "").strip(),
+        "bus": d.get("InterfaceType"),
+        "size_gb": d.get("SizeGB"),
+        # Status: OK / Pred Fail (SMART предсказывает отказ) / Degraded / Error …
+        "health": "OK" if d.get("Status") == "OK" else "FAIL" if d.get("Status") == "Pred Fail" else "WARNING",
+    } for d in data]
+
+
 def _smart_via_windows() -> list[dict] | None:
     disks = _run_powershell(
         "Get-PhysicalDisk | Select-Object DeviceId, FriendlyName, MediaType, BusType, HealthStatus, "
@@ -298,11 +323,10 @@ def _smart_via_windows() -> list[dict] | None:
         result.append({
             "device": f"PhysicalDrive{d.get('DeviceId')}",
             "model": (d.get("FriendlyName") or "").strip(),
-            "media": d.get("MediaType"),
-            "bus": d.get("BusType"),
+            "media": _MEDIA.get(d.get("MediaType"), d.get("MediaType")),
+            "bus": _BUS.get(d.get("BusType"), d.get("BusType")),
             "size_gb": d.get("SizeGB"),
-            "health": {"Healthy": "OK", "Warning": "WARNING", "Unhealthy": "FAIL"}.get(
-                d.get("HealthStatus"), str(d.get("HealthStatus"))),
+            "health": _HEALTH.get(d.get("HealthStatus"), str(d.get("HealthStatus"))),
             "operational": ", ".join(op) if isinstance(op, list) else op,
             "temperature": c.get("Temperature") or None,
             "power_on_hours": c.get("PowerOnHours"),
@@ -318,6 +342,9 @@ def collect_smart() -> dict:
     if data is None and IS_WINDOWS:
         data = _smart_via_windows()
         source = "Windows Storage (Get-PhysicalDisk)"
+    if data is None and IS_WINDOWS:
+        data = _smart_via_wmi_legacy()
+        source = "WMI (Win32_DiskDrive)"
     if data is None:
         return {"available": False, "drives": [],
                 "note": "SMART недоступен: установите smartmontools или запустите от имени администратора"}

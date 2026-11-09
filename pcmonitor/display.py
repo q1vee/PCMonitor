@@ -3,13 +3,58 @@
 from __future__ import annotations
 
 import os
+import sys
 
-# Включаем ANSI-цвета в консоли Windows 10+
-if os.name == "nt":
-    os.system("")
 
+def _enable_ansi() -> bool:
+    """Включить ANSI-последовательности (цвет, перерисовка) в консоли.
+
+    Windows 10+ поддерживает их после включения режима VT; в Windows 7/8.1
+    и при выводе в файл/канал включить не удастся — тогда работаем без цвета,
+    с очисткой экрана через cls и ASCII-шкалами.
+    """
+    if not sys.stdout.isatty():
+        return False
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.GetStdHandle(-11)          # STD_OUTPUT_HANDLE
+        mode = ctypes.c_uint32()
+        if not kernel32.GetConsoleMode(handle, ctypes.byref(mode)):
+            return False
+        if mode.value & 0x0004:                       # ENABLE_VIRTUAL_TERMINAL_PROCESSING
+            return True
+        return bool(kernel32.SetConsoleMode(handle, mode.value | 0x0004))
+    except (AttributeError, OSError):
+        return False
+
+
+ANSI = _enable_ansi()
 RESET, BOLD, RED, YEL, GRN, DIM = "\033[0m", "\033[1m", "\033[91m", "\033[93m", "\033[92m", "\033[2m"
-USE_COLOR = True
+USE_COLOR = ANSI
+# Символы шкал: псевдографика там, где консоль её точно покажет, иначе ASCII
+FULL, EMPTY, HLINE = ("█", "░", "══") if ANSI else ("#", ".", "==")
+
+
+def clear_screen() -> None:
+    if ANSI:
+        print("\033[2J\033[H", end="", flush=True)
+    elif sys.stdout.isatty():
+        os.system("cls" if os.name == "nt" else "clear")
+    else:
+        print()
+
+
+def redraw(text: str) -> None:
+    """Перерисовать экран мониторинга (без мерцания, если консоль поддерживает ANSI)."""
+    if ANSI:
+        out = "\n".join(line + "\033[K" for line in text.split("\n"))
+        print("\033[H" + out + "\033[J", end="", flush=True)
+    else:
+        clear_screen()
+        print(text, flush=True)
 
 
 def _c(text: str, color: str) -> str:
@@ -21,12 +66,12 @@ def bar(percent: float | None, width: int = 24, warn: float = 75, crit: float = 
         return "н/д"
     filled = int(round(width * min(percent, 100) / 100))
     color = RED if percent >= crit else YEL if percent >= warn else GRN
-    return _c("█" * filled, color) + _c("░" * (width - filled), DIM) + f" {percent:5.1f}%"
+    return _c(FULL * filled, color) + _c(EMPTY * (width - filled), DIM) + f" {percent:5.1f}%"
 
 
 def render(snap: dict, alerts: list) -> str:
     L: list[str] = []
-    L.append(_c(f"══ Мониторинг ПК · {snap['host']} · {snap['os']} · {snap['timestamp']} ══", BOLD))
+    L.append(_c(f"{HLINE} Мониторинг ПК · {snap['host']} · {snap['os']} · {snap['timestamp']} {HLINE}", BOLD))
 
     cpu = snap["cpu"]
     if "error" in cpu:

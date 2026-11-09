@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from statistics import mean
 
-DEFAULT_HISTORY = Path(__file__).resolve().parents[1] / "data" / "history.jsonl"
+from .paths import HISTORY_FILE as DEFAULT_HISTORY  # noqa: E402
 
 
 def compact(snapshot: dict, alerts: list, session: str | None = None) -> dict:
